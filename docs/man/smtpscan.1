@@ -1,0 +1,104 @@
+.TH SMTPSCAN "1" "20020821" "smtpscan @VERSION@"
+.SH NAME
+.B smtpscan @VERSION@
+
+.SH SYNOPSIS
+.B smtpscan
+[\fIOPTIONS...\fR] \fIhostname(s)\fR
+.br
+.B smtpscan [\fIOPTIONS...\fR] \fI-D DOMAINNAME\fR
+
+.SH DESCRIPTION
+smtpscan is a remote SMTP server version detector. It can be used to guess which mail software is used on a remote server, that may hide its SMTP banner.
+
+smtpscan works by testing the remote SMTP server reaction, thanks to tests
+defined in the tests (/usr/local/share/smtpscan/tests) file. Almost all of those tests consists in weird SMTP request, whose answer is not precisly defined in the corresponding RFCs. Some other times, they check whether the remote SMTP server is simply RFC compliant. After each test, remote server returns a SMTP Error Message. Fingerprints are made of SMTP Error Messages corresponding to the tests.
+
+Due to the fact that server reaction may be modified by its configuration, smtpscan tries to detect the nearest fingerprint if there is no exact match, that is it finds the fingerprint(s) that have the fewer different Error Messages.
+
+Currently, 15 tests are used to guess the remote server version. Some other may be added in the future.
+
+.SH OPTIONS
+\fB-h\fR, \fB\-\-help\fR            Print help message
+.br
+\fB-V\fR                    Print smtpscan current version and exits
+.br
+\fB-v\fR                    Verbose mode
+.br
+\fB-d\fR                    Debug mode
+.br
+
+.br
+\fB-f\fR=PATH               Fingerprint file location
+.br
+\fB-t\fR=PATH               Test file location
+.br
+\fB-p\fR=PORT               Remote port
+.br
+\fB-i\fR=TIMEOUT            Connection timeout (in seconds)
+.br
+.TP
+\fB-c\fR
+.br
+Connect only once. Some servers don't accept too many consecutive
+connections from a host. You may use this option to be able to scan some
+servers. smtpscan then uses the SMTP 'RSET' command to be able to restart
+negociation. Beware: some SMTP servers don't accept too many RSET either...
+.br
+
+.TP
+\fB-D\fR
+.br
+Specify a Domain name instead of a server. smtpscan then retrieve the corresponding mail exchanger and scan it
+
+.TP
+\fB-n\fR=NUMBER
+.br
+Scan the Nth mail exchanger instead of the first (ordered by preference)
+.TP
+\fB-a\fR
+.br
+Scan all the Mail Exchangers of the specified domain (see -D switch), that is scan every IP address returned by a MX DNS request (beware of 'virtual IPs' or load balancing...)
+
+.SH EXAMPLES
+Here is some smtpscan use examples :
+
+.TP
+.B smtpscan smtp.test.com
+.Sp
+Scans remote host smtp.test.com to guess its smtp software version
+.TP
+.B smtpscan smtp1.test.com smtp2.test.com
+.Sp
+Scans remote hosts smtp1 et smtp2
+.TP
+.B smtpscan -D yahoo.com
+.Sp
+Scans the yahoo.com first Mail Exchanger (may be different servers while
+trying several times, because of DNS CNAME)
+.TP
+.B smtpscan -D yahoo.com -n 2
+.Sp
+Scans the yahoo.com secondary Mail Exchanger
+.TP
+.B smtpscan -D yahoo.com -a -c -i 15
+.Sp
+Scans all the yahoo.com Mail Exchangers found, uses the RSET smtp keyword
+so that only one connexion is opened per SMTP server and sets the timeout
+at 15 seconds
+
+.SH FILES
+.I @prefix@/smtpscan/fingerprints
+- fingerprints file
+
+.I @prefix@/smtpscan/tests
+- tests file
+
+.SH AUTHOR
+Julien Bordet (<zejames>) <zejames@greyhats.org>
+
+.SH HOW TO HELP
+smtpscan fingerprint file is a growing database : any mail sent to zejames@greyhats.org with fingerprint and SMTP server version would be very appreciated :=)
+
+.SH AVAILABILITY
+http://www.greyhats.org/outils/smtpscan/

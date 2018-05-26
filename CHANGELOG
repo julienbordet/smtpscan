@@ -1,0 +1,34 @@
+- 0.5
+  -> _HUGE_ improvement of the fingerprint database with great help from Renaud 
+  Deraison. It nows has more that 3000 entries. Please note that the copyright 
+  for this file has changed too (see the first lines of the file)
+  -> correct bug in get_line (thanks to Nicob, Nicolas Gregoire and Vincent 
+  Renardias)
+
+- 0.4
+  -> make source address and domain random, so that one cannot analysis from 
+  testing simply by refusing that domain and address (see article at 
+  http://www.frbsd.org/fr/PoweredBy/smtpscan.html)
+  -> improve much the speed of scan, thanks to Julien Perez's idea
+
+- 0.3.1
+  -> solve a problem with rbl informational message being incorrectly printed
+  -> correct ambiguous statement about LICENSE in stmpscan code. License is
+     now undoubtfully GNU GPL
+
+- 0.3
+  -> add information printing about remote server configuration (source
+  checking ...) (suggested by "Nicob" <nicob@nicob.net>)
+  -> improve database
+  -> add LICENCE file
+  -> add CONTRIBUTOR file
+  -> add '-D' switch to allow to specify only a domain name, not a server 
+     (suggested by "Fernando Cardoso" <fernando.cardoso@whatevernet.com>)
+  -> add '-a' switch to scan every MXs for the specified domain (to be used
+     with -D)
+  -> add '-c' switch allowing not to create a new connexion for each test, using
+     the RSET command (suggested by "Gwenael Letellier" <gwen@folleville.net>)
+  -> add multi target support
+
+- 0.2
+  -> first public release

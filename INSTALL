@@ -1,0 +1,21 @@
++-------------------------------------------------+
+               smtpscan version @VERSION@
++-------------------------------------------------+
+
+To install : 
+
+  1) Check whether you have the perl module Net::DNS installed on your
+     system :
+         # perl -MNet::DNS -e ''
+     If the module cannot be located, install it. Net::DNS is included in
+     the smtpscan distribution. To install it, just make :
+         # tar zxvf Net-DNS-0.29.tar.gz
+         # cd Net-DNS-0.29
+         # perl Makefile.PL
+         # make
+         # make install
+  2) modify variable DESTDIR in the configure script to setup the install 
+     destination directory (default '/usr/local')
+  2) run configure
+  3) That's all
+

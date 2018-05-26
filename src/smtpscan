@@ -1,0 +1,433 @@
+#!/usr/bin/perl -w
+#
+# Author : Julien Bordet <zejames@greyhats.org>
+# Copyright (C) 2002-2003 Julien Bordet
+#
+# This is a free software, released under the GNU GPL License
+#
+# Written to be compatible with perl 5.5x
+#
+
+use strict;
+use Getopt::Long;
+use IO::Socket::INET;
+use File::Basename;
+use Net::DNS;
+
+use vars qw /$VERSION $LOCAL_SHARE $INVALID_SOURCE $MY_DOMAIN $VALID_SOURCE
+             $help $fgp_file $test_file @remote_hosts $remote_port $timeout 
+             $verbose $debug $remote_ip $domain $mx_priority $connect_once
+             @fingerprints %fingerprints @tests $nb_tests $nb_fingerprints 
+	     $every_mxs $version $banner $try @VALID_CHARS %printed/;
+
+Getopt::Long::Configure("no_ignore_case");
+
+#
+# Global variables
+#
+	     
+my $sock;
+my $domain_size = 25;
+my $mail_size   = int rand(5) + 5;  # name in mail address is between 5 and 9
+                                    # characters
+my $mail_user   = '';
+
+$LOCAL_SHARE    = '/usr/local/share';
+
+$VERSION        = '@VERSION@';
+
+@VALID_CHARS    = ( 'A' .. 'Z', 'a' .. 'z', '0' .. '9', '_');
+
+$MY_DOMAIN      = 'hotmail.com';
+
+$| = 1;
+
+#
+# Option management
+#
+
+GetOptions('h'		=>	\$help,
+	   'help'	=>	\$help,
+	   'f=s'	=>	\$fgp_file,
+	   't=s'	=>	\$test_file,
+	   'p=i'	=>	\$remote_port,
+	   'i=i'	=>	\$timeout,
+	   'v'		=>	\$verbose,
+	   'debug'	=>	\$debug,
+	   'D'	        =>	\$domain,
+	   'n=i'	=>	\$mx_priority,
+	   'c'		=>	\$connect_once,
+	   'a'          =>      \$every_mxs,
+	   'V'          =>      \$version,
+          );
+
+$fgp_file    ||= "$LOCAL_SHARE/smtpscan/fingerprints";
+$test_file   ||= "$LOCAL_SHARE/smtpscan/tests";
+$remote_port ||= 25;
+$timeout     ||= 10;
+
+if ($help) {
+    my $basename = basename $0;
+
+    print <<HELP_END;
+
+Usage: $basename [OPTION...] hostname(s)
+       $basename [OPTION...] -D DOMAIN
+
+ -h, --help     Print this help
+ -V             Print smtpscan current version and exits
+ -v             Verbose mode
+ -d             Debug mode
+
+ -f=PATH        Fingerprint file location ($LOCAL_SHARE/smtpscan/fingerprints)
+ -t=PATH        Test file location ($LOCAL_SHARE/smtpscan/tests)
+ -p=PORT        Remote port
+ -i=TIMEOUT     Connection timeout
+ -c             Connect only once (using the RSET command)
+
+ -D             Scan MX server of DOMAIN (by default scan primary server)
+ -n=VALUEscan   Nth mx server (by default 1 <-> primary, 2 <-> secondary, ...)
+ -a	        Scan every MX server of the specified DOMAIN (see -D switch)
+
+HELP_END
+
+  exit;
+}
+
+if ($version) {
+    my $basename = basename $0;
+
+    print <<VERSION_END;
+
+$basename version $VERSION
+
+VERSION_END
+  exit;
+}
+
+#
+# Generation of the invalid source address
+#
+
+$INVALID_SOURCE = &generate_source_address();
+
+# Generation of the fake source mail address
+
+for my $i (1 .. $mail_size) {
+  $mail_user .= $VALID_CHARS[int rand(@VALID_CHARS)];   
+}
+
+$VALID_SOURCE   = "$mail_user\@$MY_DOMAIN";
+
+if ($mx_priority) {
+  $mx_priority--;
+} else {
+  $mx_priority = 0;
+}
+
+if ($domain) {
+
+  # Beware : by calling smtpscan several times and increasing $mx_priority each
+  # time, you cannot be sure that you've scanned every mail exchangers : if
+  # two MXs have the same priority, you may scan one of them twince.
+	
+  my $res = new Net::DNS::Resolver;
+  die "Error : a remote host should be provided\n" unless $ARGV[0];
+  my @mxs = mx($res, $ARGV[0]);
+  die "Could not find any Mail Exchanger for domain $ARGV[0]\n" if (not @mxs);
+
+  if ($every_mxs) {
+    @remote_hosts = map { $_->exchange } @mxs;
+  } 
+  else {
+    die "There is not as many Mail Exchangers...\n" if ($mx_priority + 1 > @mxs);
+    @remote_hosts = ($mxs[$mx_priority]->exchange);
+  }
+}
+else {
+  @remote_hosts   = @ARGV or die "Error : a remote host should be provided\n";
+}
+
+#
+# Retrieving fingerprints + integrity check of the database
+# 
+
+my %seen;
+
+open FGP, "< $fgp_file" 
+	or die "Unable to open fingerprint file $fgp_file : $!\n";
+while (<FGP>) {
+  chomp;
+  next if (m/^#/ or m/^$/);
+  my ($mta) = $_ =~ m/^([^:]+):/;
+  die "Fingerprint database corrupted line $. (Duplicate Entry)\n" if ($seen{$mta});
+  $seen{$mta}++;
+  push @fingerprints, $_;
+}
+close FGP;
+$nb_fingerprints = @fingerprints;
+
+#
+# Retrieving tests
+#
+
+open TESTS, "< $test_file" or die "Unable to open tests file $test_file : $!\n";
+while (<TESTS>) {
+  chomp;
+  next if (m/^#/ or m/^$/);
+  push @tests, $_;
+}
+close TESTS;
+$nb_tests = @tests;
+
+#
+# Start of the real program
+#
+
+print basename $0 . " version $VERSION\n\n".
+      "  $nb_tests tests available\n".
+      "  $nb_fingerprints fingerprints in the database\n";
+
+for my $target (@remote_hosts) {
+  scan($target);
+}
+
+#
+# Sub functions
+#
+
+sub scan {
+  my (@result, @found);
+  my %difference;
+  my $remote = shift;	
+
+  #
+  # Checking whether remote host exists
+  #
+
+  my $raw_addr = (gethostbyname($remote))[4];
+  die "No such host : $remote\n" if (not $raw_addr);
+  
+  $remote_ip = join ('.',unpack ('C4', (gethostbyname($remote))[4]));
+  
+  print "\nScanning $remote ($remote_ip) port $remote_port\n      ";
+ 
+  ($sock, $banner) = 
+          smtp_connect($remote_ip, $remote_port, $timeout) if ($connect_once);
+  
+  for my $test (@tests) {
+    my @commands = split /->/, $test;
+    my ($real_command, $error_code);
+
+    if ($connect_once) {
+      $error_code = send_command($sock, 'RSET');
+      die "Unable to 'RSET' connection\n" if ($error_code != 250);
+    }
+    else {
+      ($sock, $banner) = smtp_connect($remote_ip, $remote_port, $timeout);
+    }
+  
+    foreach my $command (@commands) {
+      eval "\$real_command = \"$command\"";
+      $error_code = send_command($sock, $real_command);
+    }
+  
+    push @result, $error_code;
+    close $sock unless ($connect_once);
+    print $verbose ? "\n" : ("\b" x (4 + (++$try / 10 ))) . "$try/$nb_tests";
+  }
+  
+  print "\n\nResult --\n" . join (':', @result) . "\n\n";
+  
+  #
+  # Compare result and fingerprints
+  #
+  
+  foreach my $fingerprint (@fingerprints) {
+    my ($mta, @fg) = split /:/, $fingerprint;
+
+    print "Database error for $mta\n" if (not @fg);
+    warn "Entry probably corrupted for $mta (". $#fg . ")\n" if ($#fg < 14);
+  
+    $fingerprints{$mta} = \@fg; # Recording data for later
+    print "Comparing with $mta :\n" if ($debug);
+  
+    for my $i (0..$#result) {
+      $difference{$mta}++ if ($result[$i] != $fg[$i]);
+    }
+  
+    push @found, $mta if (not $difference{$mta});
+    print "  f = " . join(':', @fg)  . " (" . (scalar @fg) . ")\n".
+          "  r = " . join(':', @result) . " (" . (scalar @result) . ")\n".
+          "difference = $difference{$mta}\n" if ($debug);
+  }
+
+  # 
+  # Print banner
+  #
+
+  chomp $banner;
+  print "Banner :\n" . $banner . "\n\n";
+  
+  #
+  # Print corresponding MTA(s) 
+  # 
+  
+  if (@found) {
+    print "SMTP server corresponding :\n";
+    foreach my $mta (@found) {
+      my $orig_mta = $mta;
+      $mta =~ s{ -\d+-$}{}; # Remove the smtpscan indice
+      print "  - $mta";
+      print " (with source email address checking like RBL, ...)" 
+                           if ($result[5] ne '250');
+      print "\n";
+    }
+  } else {
+    my $min_diff = $nb_tests + 1; # $nb_tests + 1 is enough
+    my @nearest;
+  
+    foreach my $mta (keys %difference) {
+      if  ($difference{$mta} < $min_diff) {
+        @nearest = ($mta); # Forget previous nearest;
+        $min_diff = $difference{$mta};
+      } elsif ($difference{$mta} == $min_diff) {
+        push @nearest, $mta;
+      }
+    }
+    
+    my $nb_nearest = @nearest;
+    print "No exact match. Nearest match" . 
+          ($nb_nearest > 1 ? "es" : "") . 
+  	" :\n";
+  
+    foreach my $near (@nearest) {
+      my $orig_near = $near;
+      $near =~ s{ ?-\d+-$}{}; # Remove the smtpscan indice
+      if (not $printed{$near}) {
+        print "  - $near ($min_diff)";
+        print " (with source email address checking - rbl, ...)" 
+                           if ($result[5] ne '250');
+      print "\n";
+      }
+      $printed{$near}++;
+    }
+    
+    print <<END_TEXT;
+  
+  To help improving smtpscan database, if you know which soft is used there,
+  please send a mail to zejames\@greyhats.org, giving the output of smtpscan -v
+  and the remote server version.
+
+END_TEXT
+  }
+}
+
+sub send_command {
+  my ($sock, $command) = @_;
+  my ($buf);
+  my $error_code = 0;
+
+  $command .= "\r\n";
+  
+  print $command if ($verbose);
+
+  eval {
+    local $SIG{'ALRM'} = sub { die "Timeout\n"; };
+    alarm $timeout;
+    syswrite($sock, $command, length($command));
+
+    $buf = get_lines($sock);
+    
+    alarm 0;
+  };
+
+  return 0 if ($@);
+
+  ($error_code) = $buf =~ m/(\d{3})(?:\s|-)/ if $buf;
+  return $error_code;
+}
+
+sub get_lines {
+  my $sock = shift;
+  my ($buf, $line);
+
+  do {
+    $line = get_line($sock);
+    $buf .= $line;
+  } while ($line =~ m!^\d{3}-.*!);
+
+  print "$buf" if $verbose;
+
+  return $buf;
+}
+
+sub get_line
+{
+  my $sock = shift;
+  my ($ret, $res, $c);
+
+  while (($ret = sysread($sock, $c, 1)) == 1 
+         and $c ne "\n") {
+        $res .= "$c";
+  }
+
+  if ($res) {
+      $res =~ s!\r!!;
+      return "$res\n";
+  } else {
+    return "";
+  }
+}
+
+sub smtp_connect {
+  my ($ip, $port, $time) = @_;
+  my $banner;
+
+  $sock = IO::Socket::INET->new('PeerAddr'      =>      $ip,
+  		                'PeerPort'      =>      $port,
+  			        'Timeout'       =>      $time
+  		               );
+  die "Unable to connect remote host : $!\n" unless $sock;			
+
+  eval {
+    local $SIG{'ALRM'} = sub { die "Timeout\n"; };
+    alarm $timeout;
+
+    $banner = get_lines($sock);
+    
+    alarm 0;
+  };
+
+  die "Time out when getting banner (perhaps you should increase it with -i switch?)\n" if $@;
+
+  $sock->autoflush();
+
+  return ($sock, $banner);
+}
+
+sub generate_source_address
+{
+    my ($i, $ok, $query);
+    my ($fake_domain, $fake_user) = ('', '');
+    my $res = Net::DNS::Resolver->new;
+    
+    while (not $ok) {
+        for $i (1 .. $domain_size) {
+           $fake_domain .= $VALID_CHARS[int rand(@VALID_CHARS)];   
+        }
+
+	$fake_domain .= '.com';
+	$ok = 1;
+
+	$query = $res->query($fake_domain, 'SOA');
+
+	$ok = 1 if (not $query);
+    }
+    
+    for $i (1 .. 10) {
+      $fake_user .= $VALID_CHARS[int rand(@VALID_CHARS)];   
+    }
+    
+    return "$fake_user\@$fake_domain";
+}
